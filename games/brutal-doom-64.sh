@@ -55,7 +55,7 @@ done < "$CONFIG_TARGET" || zen_fail 6 "ERROR: Could not read $CONFIG_TARGET"
 
 CONFIG_WRITE=0
 DOOMWAD_FOUND=0
-DOOMWAD_VALID='doom.wad tnt.wad plutonia.wad'
+DOOMWAD_VALID='doom2.wad tnt.wad plutonia.wad'
 MSG_WRITE_FAIL='ERROR: Failed to write modified configuration file'
 while [[ "$DOOMWAD_FOUND" != 1 ]]; do
     # Search each WAD in each IWAD directory, case unsensitive.
