@@ -16,7 +16,7 @@ zen_fail() {
     exit "$ret"
 }
 
-CONFIG_DIR="$HOME/.config/brutal-doom-64/"
+CONFIG_DIR="$HOME/.config/gzdoom/brutal-doom-64/"
 CONFIG_SOURCE='/usr/share/games/brutal-doom-64/gzdoom.ini'
 CONFIG_TARGET="$CONFIG_DIR/gzdoom.ini"
 
