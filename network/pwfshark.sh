@@ -3,47 +3,39 @@ IFACE='wlp3s0'
 QUALITY_MAX=70
 SAMPLES_MAX=3000
 
-cell_list=''
-noenc_list=''
-declare -i cell=0
-while read -a LINE; do
-    #echo "DEBUG: ${LINE[@]}"
-    if [[ "${LINE[0]}" == 'Cell' ]]; then
-        cell="10#${LINE[1]}"
-        if [[ "${LINE[3]}" == 'Address:' ]]; then
-           iwlist_bssid[$cell]="${LINE[4]}"
-        fi
-        cell_list+=" $cell"
-    fi
-    if [[ "${LINE[0]}" =~ ^'Quality=' ]]; then
-       iwlist_quality[$cell]="${LINE[0]/#Quality=/}"
-       iwlist_quality[$cell]="${iwlist_quality[$cell]/\/$QUALITY_MAX/}"
-    fi
-    if [[ "${LINE[0]}" == 'Encryption' ]]; then
-       iwlist_encryption[$cell]="${LINE[1]}"
-    fi
-    if [[ "${LINE[0]}" =~ ^'ESSID:' ]]; then
-       iwlist_essid[$cell]="${LINE[0]/#ESSID:\"/}"
-       iwlist_essid[$cell]="${iwlist_essid[$cell]/%\"/}"
-    fi
-    if [[ "${LINE[0]}" == "$IFACE" && "${LINE[@]}" =~ 'Device or resource busy' ]]; then
-        echo ERROR
-        break
-    fi
-done < <(iwlist "$IFACE" scanning 2>&1)
+declare -A base_bssid_essid
+declare -A base_bssid_quality
+declare -A base_bssid_encryption
 
-declare -A base_bssid_cell
-for CELL in $cell_list; do
-    base_bssid_cell["${iwlist_bssid[$CELL]}"]=$CELL
-    if [[ "${iwlist_encryption[$CELL]}" == 'key:off' ]]; then
-        noenc_list+=" $CELL"
-        echo Cell: $CELL
-        echo '  'ESSID: ${iwlist_essid[$CELL]}
-        echo '  'BSSID: ${iwlist_bssid[$CELL]}
-        echo '  'Quality: ${iwlist_quality[$CELL]}
-        echo '  'Encryption: ${iwlist_encryption[$CELL]}
-    fi
+echo -en Collecting scanning data..
+for TRY in 1 2 3 4 5; do
+    echo -en '.'
+    while read -a LINE; do
+        #echo "DEBUG: ${LINE[@]}"
+        if [[ "${LINE[0]}" == 'Cell' ]]; then
+            if [[ "${LINE[3]}" == 'Address:' ]]; then
+               BSSID="${LINE[4]^^}"
+            fi
+        fi
+        if [[ "${LINE[0]}" =~ ^'Quality=' ]]; then
+           base_bssid_quality[$BSSID]="${LINE[0]/#Quality=/}"
+           base_bssid_quality[$BSSID]="${base_bssid_quality[$BSSID]/\/$QUALITY_MAX/}"
+        fi
+        if [[ "${LINE[0]}" == 'Encryption' ]]; then
+           base_bssid_encryption[$BSSID]="${LINE[1]}"
+        fi
+        if [[ "${LINE[0]}" =~ ^'ESSID:' ]]; then
+           base_bssid_essid[$BSSID]="${LINE[0]/#ESSID:\"/}"
+           base_bssid_essid[$BSSID]="${base_bssid_essid[$BSSID]/%\"/}"
+        fi
+        if [[ "${LINE[0]}" == "$IFACE" && "${LINE[@]}" =~ 'Device or resource busy' ]]; then
+            echo ERROR
+            break
+        fi
+    done < <(iwlist "$IFACE" scanning 2>&1)
 done
+
+echo ''
 
 nmcli d set "$IFACE" managed no
 nmcli networking off 
@@ -54,14 +46,6 @@ modprobe iwlwifi
 sleep 0.3
 ip link set up "$IFACE"
 sleep 0.4
-
-grep_bssid_filter=''
-separator=''
-for CELL in $noenc_list; do
-    grep_bssid_filter+="${separator}${iwlist_bssid[$CELL]}"
-    separator='|'
-done
-grep_bssid_filter="BSSID:($grep_bssid_filter)"
 
 coproc DUMPCOP { tcpdump -i $IFACE -nn -I -e | grep -Ev '(Beacon|Probe|Acknowledgment)'; }
 
@@ -80,10 +64,13 @@ while read -u ${DUMPCOP[0]} -a LINE; do
         declare -i jump=1
         if [[ "${LINE[$n]}" =~ ^'SA:' ]]; then
             dump_sa[$sample]="${LINE[$n]/#SA:/}"
+            dump_sa[$sample]="${dump_sa[$sample]^^}"
         elif [[ "${LINE[$n]}" =~ ^'DA:' ]]; then
             dump_da[$sample]="${LINE[$n]/#DA:/}"
+            dump_da[$sample]="${dump_da[$sample]^^}"
         elif [[ "${LINE[$n]}" =~ ^'BSSID:' ]]; then
             dump_bssid[$sample]="${LINE[$n]/#BSSID:/}"
+            dump_bssid[$sample]="${dump_bssid[$sample]^^}"
         elif [[ "${LINE[$n]}" == 'ethertype' && "${LINE[$n+1]}" == 'IPv4' ]]; then
             if [[ "${LINE[$n+3]}" =~ $regex_ip ]]; then
                 dump_sip[$sample]="$BASH_REMATCH"
@@ -149,6 +136,20 @@ for BSSID in ${!base_bssid_gwmac[@]}; do
     base_bssid_gwmac[$BSSID]=$biggest_gwmac
 done
 
+for BSSID in ${!base_bssid_essid[@]}; do
+    if [[ "${base_bssid_encryption[$BSSID]}" == 'key:off' ]]; then
+        echo ESSID: ${base_bssid_essid[$BSSID]}
+        echo '  'BSSID: $BSSID
+        echo '  'Quality: ${base_bssid_quality[$BSSID]}
+        echo '  'Encryption: ${base_bssid_encryption[$BSSID]}
+        if [[ -n "${base_bssid_gwmac[$BSSID]}" ]]; then
+            echo '  'Gateway:" ${base_bssid_gwmac[$BSSID]} (Hits: ${base_gwmac_hits[${base_bssid_gwmac[$BSSID]}]})"
+        else
+            echo '  'Gateway: Unknown
+        fi
+    fi
+done
+
 for BSSID in ${!base_bssid_gwmac[@]}; do
     echo "Gateway: ${base_bssid_gwmac[$BSSID]} BSSID: $BSSID hits ${base_gwmac_hits[${base_bssid_gwmac[$BSSID]}]}"
 done
@@ -178,7 +179,7 @@ done
 shopt -s extglob nocasematch
 for IP in ${!base_ip_mac[@]}; do
     BSSID=${base_ip_bssid[$IP]^^}
-    ESSID=${iwlist_essid[${base_bssid_cell[$BSSID]}]:-???}
+    ESSID=${base_bssid_essid[$BSSID]:-???}
     echo "$ESSID ($BSSID) -- $IP (${base_ip_mac[$IP]}): ${base_ip_hits[$IP]}"
 done
 
